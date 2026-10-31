@@ -38,7 +38,7 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
       grid: { vertLines: { color: "#111a30" }, horzLines: { color: "#111a30" } },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.08 } },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: tf < 60, rightOffset: 6 },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: tf < 60, rightOffset: 8, barSpacing: 11, minBarSpacing: 3 },
     });
 
     const series: ISeriesApi<"Candlestick"> = chart.addCandlestickSeries({
@@ -51,10 +51,9 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
       priceLineVisible: false,
     });
 
-    // lightweight-charts draws UTC; shift to the device's local time.
-    const shift = -new Date().getTimezoneOffset() * 60;
+    // Use UTC+0 directly to align 1:1 with the broker chart's UTC+0 clock
     const conv = (c: Candle) => ({
-      time: (c.time + shift) as UTCTimestamp,
+      time: c.time as UTCTimestamp,
       open: c.open,
       high: c.high,
       low: c.low,
@@ -100,7 +99,10 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
               setPrecision(m.candles[m.candles.length - 1].close);
               series.setData(m.candles.map(conv));
               last = m.candles[m.candles.length - 1];
-              chart.timeScale().scrollToRealTime();
+              if (!m.resync) {
+                const len = m.candles.length;
+                chart.timeScale().setVisibleLogicalRange({ from: len - 35, to: len + 4 });
+              }
               setState("live");
               place();
             } else if (m.type === "tick") {
@@ -167,7 +169,14 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
           <span>{msg || `Connecting to ${wsBase}`}</span>
         </div>
       )}
-      {state === "live" && <div className="rate">{tickRate} updates/s</div>}
+      {state === "live" && (
+        <div className="rate" style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <span>{tickRate} updates/s</span>
+          <span style={{ color: "#7d89a8", borderLeft: "1px solid #1e293b", paddingLeft: "8px" }}>
+            {new Date().toISOString().substring(11, 19)} UTC+0
+          </span>
+        </div>
+      )}
     </div>
   );
 }

@@ -11,7 +11,6 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 const BRIDGE_PORT = 8765;
-const DEFAULT_SSID = '42["auth",{"session":"7l0u69vk978vec0elak4ab084a","isDemo":1,"uid":103613367,"platform":2,"isFastHistory":true,"isOptimized":true}]';
 
 let bridgeProc: ChildProcess | null = null;
 
@@ -19,7 +18,7 @@ function startBridge() {
   console.log(`[Server] Starting internal Pocket Option bridge on 127.0.0.1:${BRIDGE_PORT}...`);
   const env = {
     ...process.env,
-    POCKET_SSID: process.env.POCKET_SSID || DEFAULT_SSID,
+    POCKET_SSID: process.env.POCKET_SSID || '',
   };
 
   bridgeProc = spawn('python3', ['-m', 'uvicorn', 'bridge.server:app', '--host', '127.0.0.1', '--port', String(BRIDGE_PORT), '--log-level', 'warning'], {
@@ -100,6 +99,21 @@ async function main() {
       return res.json(data);
     } catch (e) {
       res.status(500).json({ status: 'error', msg: String(e) });
+    }
+  });
+
+  // Proxy diag endpoint
+  app.get('/api/diag', async (req, res) => {
+    try {
+      const query = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+      const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/diag${query}`);
+      if (response.ok) {
+        const data = await response.json();
+        return res.json(data);
+      }
+      res.status(response.status).json({ error: 'Diag endpoint returned non-200' });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
     }
   });
 
