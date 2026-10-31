@@ -1,7 +1,8 @@
 {
-  "name": "PocketOption Live Chart & Broker Bridge",
-  "description": "Real-time tick-by-tick candlestick charting terminal with Pocket Option SSID bridge, updates/s tick counter, multi-broker routing, and raw protocol inspector.",
+  "name": "QuantX Dashboard",
+  "description": "QuantX real-data binary options dashboard with live Pocket Option bridge, Quotex-style countdown line, and multi-broker support.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
+
 
