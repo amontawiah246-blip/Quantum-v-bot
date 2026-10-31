@@ -1,0 +1,7 @@
+{
+  "name": "PocketOption Live Chart & Broker Bridge",
+  "description": "Real-time tick-by-tick candlestick charting terminal with Pocket Option SSID bridge, updates/s tick counter, multi-broker routing, and raw protocol inspector.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
