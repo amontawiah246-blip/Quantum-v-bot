@@ -19,6 +19,8 @@ function startBridge() {
   const env = {
     ...process.env,
     POCKET_SSID: process.env.POCKET_SSID || '',
+    IQ_EMAIL: process.env.IQ_EMAIL || 'yawkwasi224@gmail.com',
+    IQ_PASSWORD: process.env.IQ_PASSWORD || 'khemical2$',
   };
 
   bridgeProc = spawn('python3', ['-m', 'uvicorn', 'bridge.server:app', '--host', '127.0.0.1', '--port', String(BRIDGE_PORT), '--log-level', 'warning'], {
@@ -56,7 +58,8 @@ async function main() {
   // Proxy status
   app.get('/api/status', async (req, res) => {
     try {
-      const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/status`);
+      const query = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+      const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/status${query}`);
       if (response.ok) {
         const data = await response.json();
         return res.json(data);
@@ -66,7 +69,7 @@ async function main() {
     }
     res.json({
       ready: false,
-      error: 'Connecting to Pocket Option live bridge...',
+      error: 'Connecting to the live bridge...',
       balance: null,
       demo: true,
       assets: 0,
@@ -76,7 +79,8 @@ async function main() {
   // Proxy assets list
   app.get('/api/assets', async (req, res) => {
     try {
-      const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/assets`);
+      const query = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+      const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/assets${query}`);
       if (response.ok) {
         const data = await response.json();
         return res.json(data);
@@ -91,6 +95,21 @@ async function main() {
   app.post('/api/set-ssid', async (req, res) => {
     try {
       const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/set-ssid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (e) {
+      res.status(500).json({ status: 'error', msg: String(e) });
+    }
+  });
+
+  // Proxy broker login (Quotex email/password)
+  app.post('/api/set-credentials', async (req, res) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/set-credentials`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req.body),

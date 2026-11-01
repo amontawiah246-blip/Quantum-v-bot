@@ -24,6 +24,31 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from BinaryOptionsToolsV2.pocketoption import PocketOptionAsync
 
+try:
+    from .iqoption_provider import IQProvider
+except ImportError:
+    from iqoption_provider import IQProvider
+
+try:
+    try:
+        from .quotex_provider import QuotexProvider
+    except ImportError:
+        from quotex_provider import QuotexProvider
+except Exception:
+    class QuotexProvider:
+        name = "quotex"
+        configured = False
+        ready = False
+        error = "Quotex not configured"
+        balance = None
+        assets = []
+        async def connect(self): return None
+        async def list_assets(self): return []
+        async def ticks(self, asset):
+            if False: yield (0, 0.0)
+        async def candles(self, asset, tf, window_s): return []
+        def set_credentials(self, email, password): pass
+
 now = time.time          # module-level so tests can run on a simulated clock
 sleep = asyncio.sleep
 
@@ -45,6 +70,19 @@ FINE_KEEP = 6 * 3600 // FINE
 CHAIN_MAX_GAP = 20         # seconds without ticks after which a new candle no longer chains to the old close
 IDLE_KEEP_S = 900          # keep recording an asset this long after the last chart closes
 DEFAULT_ASSET = "EURUSD_otc"
+QX = QuotexProvider()      # Quotex (pyquotex); Pocket Option stays on the code path below
+IQ = IQProvider()          # IQ Option (read-only, same interface as the Quotex provider)
+PROVIDERS = {"quotex": QX, "iqoption": IQ}
+BROKERS = ("pocket", "quotex", "iqoption")
+
+
+def bk(v):
+    return v if v in BROKERS else "pocket"
+
+
+def fkey(broker, asset):
+    """Feeds and recorders are per broker AND asset, so two brokers never mix their prices."""
+    return f"{broker}:{asset}"
 FINE_FETCH_MAX = 4 * 3600  # the broker's 5-second history only reaches back this far
 REPAIR_MAX = int(3.5 * 3600)
 
@@ -117,6 +155,10 @@ async def connect() -> Optional[PocketOptionAsync]:
             return None
 
 
+async def connect_broker(broker):
+    return await (PROVIDERS[broker].connect() if broker in PROVIDERS else connect())
+
+
 # ---------- tick recorder: our own 5-second candles, never behind the live feed ----------
 class Recorder:
     def __init__(self):
@@ -147,22 +189,38 @@ class Recorder:
         return [self.fine[t] for t in sorted(self.fine)]
 
 
-def rec_for(asset) -> Recorder:
-    r = recs.get(asset)
+def rec_for(k) -> Recorder:
+    r = recs.get(k)
     if not r:
-        r = recs[asset] = Recorder()
+        r = recs[k] = Recorder()
     return r
 
 
 # ---------- shared live feed: one Pocket Option subscription per asset ----------
 class Feed:
-    def __init__(self, asset):
-        self.asset, self.queues, self.task = asset, set(), None
+    def __init__(self, asset, broker="pocket"):
+        self.asset, self.broker, self.queues, self.task = asset, broker, set(), None
         self.reaper, self.pinned = None, False
-        self.rec = rec_for(asset)
+        self.k = fkey(broker, asset)
+        self.rec = rec_for(self.k)
+
+    async def run_provider(self):
+        prov = PROVIDERS[self.broker]
+        if not await prov.connect():
+            return
+        async for ts, price in prov.ticks(self.asset):
+            tick = (ts, price)
+            self.rec.add(*tick)
+            for q in list(self.queues):
+                if q.full():
+                    q.get_nowait()
+                q.put_nowait(tick)
 
     async def run(self):
         try:
+            if self.broker in PROVIDERS:
+                await self.run_provider()
+                return
             client = await connect()
             if not client:
                 return
@@ -193,14 +251,15 @@ class Feed:
                 if q.full():
                     q.get_nowait()
                 q.put_nowait(None)
-            if feeds.get(self.asset) is self:
-                feeds.pop(self.asset, None)
+            if feeds.get(self.k) is self:
+                feeds.pop(self.k, None)
 
 
-def ensure_feed(asset):
-    feed = feeds.get(asset)
+def ensure_feed(asset, broker="pocket"):
+    k = fkey(broker, asset)
+    feed = feeds.get(k)
     if not feed:
-        feed = feeds[asset] = Feed(asset)
+        feed = feeds[k] = Feed(asset, broker)
         feed.task = asyncio.create_task(feed.run())
     if feed.reaper:
         feed.reaper.cancel()
@@ -208,8 +267,8 @@ def ensure_feed(asset):
     return feed
 
 
-def attach(asset):
-    feed = ensure_feed(asset)
+def attach(asset, broker="pocket"):
+    feed = ensure_feed(asset, broker)
     q = asyncio.Queue(maxsize=2000)
     feed.queues.add(q)
     return feed, q
@@ -217,15 +276,15 @@ def attach(asset):
 
 def reap(feed):
     feed.reaper = None
-    if not feed.queues and not feed.pinned and feeds.get(feed.asset) is feed:
-        feeds.pop(feed.asset, None)
+    if not feed.queues and not feed.pinned and feeds.get(feed.k) is feed:
+        feeds.pop(feed.k, None)
         if feed.task:
             feed.task.cancel()
 
 
 def detach(feed, q):
     feed.queues.discard(q)
-    if not feed.queues and not feed.pinned and feeds.get(feed.asset) is feed and not feed.reaper:
+    if not feed.queues and not feed.pinned and feeds.get(feed.k) is feed and not feed.reaper:
         # keep recording for a while: the next chart opens onto a warm recorder instead of a cold start
         feed.reaper = asyncio.get_running_loop().call_later(IDLE_KEEP_S, reap, feed)
 
@@ -382,6 +441,40 @@ async def history_checked(client, asset, tf, live_price, rec=None):
     return off, None, [], {}
 
 
+async def build_history_qx(asset, tf, rec=None, broker="quotex"):
+    """Provider candles (Quotex / IQ Option, already UTC) extended with our own recorded ticks; broker candles win."""
+    t = now()
+    main = []
+    for window in (tf * ROWS, tf * 120, tf * 40):   # smaller windows if the broker refuses a big one
+        try:
+            main = await PROVIDERS[broker].candles(asset, tf, window)
+            if main:
+                break
+        except Exception:
+            continue
+    merged = {c["time"]: c for c in main}
+    ticks = rec.candles() if rec else []
+    since = main[-1]["time"] if main else int(t // tf * tf) - tf * 3
+    for c in aggregate(ticks, tf, since, t):
+        merged.setdefault(c["time"], c)
+    dbg = {"official_count": len(main), "official_newest": main[-1]["time"] if main else None,
+           "tick_count": len(ticks), "check_close": main[-1]["close"] if main and t - main[-1]["time"] <= tf * 3 else None}
+    return [merged[k] for k in sorted(merged)], dbg
+
+
+async def history_checked_b(broker, client, asset, tf, live_price, rec=None):
+    if broker not in PROVIDERS:
+        return await history_checked(client, asset, tf, live_price, rec)
+    cs, dbg = await build_history_qx(asset, tf, rec, broker)
+    return 0, disagreement(dbg, live_price) or 0.0, cs, dbg
+
+
+async def build_history_b(broker, client, asset, tf, off, rec=None):
+    if broker not in PROVIDERS:
+        return await build_history(client, asset, tf, off, rec)
+    return await build_history_qx(asset, tf, rec, broker)
+
+
 class Book:
     """Everything a chart has been shown. Merging only adds or corrects candles and never drops any, so a late or
     stale history response cannot open a hole."""
@@ -432,13 +525,29 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 @app.get("/api/status")
-async def status():
-    return {"ready": S["ready"], "error": S["error"], "balance": S["balance"], "lib": lib_version(),
+async def status(broker: str = "pocket"):
+    if bk(broker) in PROVIDERS:
+        P = PROVIDERS[bk(broker)]
+        return {"broker": bk(broker), "ready": P.ready, "error": P.error, "balance": P.balance,
+                "demo": True, "assets": len(P.assets), "configured": P.configured}
+    return {"broker": "pocket", "configured": bool(SSID),
+            "ready": S["ready"], "error": S["error"], "balance": S["balance"], "lib": lib_version(),
             "demo": ('"isDemo":1' in SSID.replace(" ", "")) if SSID else True, "assets": len(S["assets"])}
 
 
 @app.get("/api/assets")
-async def assets():
+async def assets(broker: str = "pocket"):
+    if bk(broker) in PROVIDERS:
+        P = PROVIDERS[bk(broker)]
+        if not P.ready:
+            await P.connect()
+        try:
+            if P.ready:
+                await P.list_assets()
+        except Exception:
+            pass
+        return [{"symbol": a["symbol"], "name": a["name"], "payout": a["payout"], "active": a["active"]}
+                for a in P.assets]
     if not S["ready"]:
         await connect()
     try:
@@ -457,6 +566,29 @@ async def assets():
     return out
 
 
+@app.post("/api/set-credentials")
+async def set_credentials(data: dict):
+    """Quotex / IQ Option login. Kept in memory only."""
+    b = bk(str(data.get("broker", "quotex")))
+    if b not in PROVIDERS:
+        return {"status": "error", "msg": "This broker does not use email/password"}
+    email, pw = str(data.get("email", "")).strip(), str(data.get("password", "")).strip()
+    ssid = str(data.get("ssid", "")).strip()
+    if b == "iqoption":
+        if not ssid and not (email and pw):
+            return {"status": "error", "msg": "Enter email and password, or an IQ Option SSID"}
+        IQ.set_credentials(email, pw, ssid)
+    else:
+        if not email or not pw:
+            return {"status": "error", "msg": "Email and password are both needed"}
+        QX.set_credentials(email, pw)
+    for k, f in list(feeds.items()):
+        if f.broker == b and f.task:
+            f.task.cancel()
+    asyncio.create_task(PROVIDERS[b].connect())
+    return {"status": "ok", "msg": f"{b} login saved, connecting..."}
+
+
 @app.post("/api/set-ssid")
 async def set_ssid(data: dict):
     global SSID
@@ -470,31 +602,32 @@ async def set_ssid(data: dict):
         pass
     S.update(ready=False, client=None, error="")
     for f in list(feeds.values()):
-        if f.task:
+        if f.broker == "pocket" and f.task:   # leave the other brokers' feeds alone
             f.task.cancel()
     asyncio.create_task(connect())
     return {"status": "ok", "msg": "SSID updated, reconnecting..."}
 
 
 @app.get("/api/diag")
-async def diag(asset: str = "EURUSD_otc", tf: int = 60):
+async def diag(asset: str = "EURUSD_otc", tf: int = 60, broker: str = "pocket"):
     """What the dashboard will draw: clock offset, verification against live price, newest candles, holes."""
-    client = await connect()
+    broker = bk(broker)
+    client = await connect_broker(broker)
     if not client:
-        return {"error": S["error"]}
-    feed, q = attach(asset)
+        return {"error": PROVIDERS[broker].error if broker in PROVIDERS else S["error"]}
+    feed, q = attach(asset, broker)
     try:
         first = await asyncio.wait_for(q.get(), 10)
         if first is None:
             return {"error": "live feed ended"}
         live = first[1]
-        off, gap, cs, dbg = await history_checked(client, asset, tf, live, feed.rec)
+        off, gap, cs, dbg = await history_checked_b(broker, client, asset, tf, live, feed.rec)
         forming = int(now() // tf * tf)
         have = {c["time"] for c in cs}
         fmt = lambda c: {**c, "utc": utc(c["time"])}
-        return {"lib": lib_version(), "asset": asset, "tf": tf,
+        return {"broker": broker, "lib": lib_version(), "asset": asset, "tf": tf,
                 "now_utc": utc(now()),
-                "measured_broker_offset_s": await measure_offset(client), "used_offset_s": off,
+                "measured_broker_offset_s": await measure_offset(client) if broker == "pocket" else 0, "used_offset_s": off,
                 "live_price": live, "gap_to_live_pct": None if gap is None else round(gap, 4),
                 "count": len(cs), "newest": [fmt(c) for c in cs[-6:]],
                 "sources": {k: (utc(v) if k.endswith(("newest", "since")) and v else v) for k, v in dbg.items()},
@@ -509,6 +642,7 @@ async def diag(asset: str = "EURUSD_otc", tf: int = 60):
 @app.websocket("/ws")
 async def ws(sock: WebSocket):
     await sock.accept()
+    broker = bk(sock.query_params.get("broker", "pocket"))
     asset = sock.query_params.get("asset", DEFAULT_ASSET)
     tf = int(sock.query_params.get("tf", "60"))
     send_lock = asyncio.Lock()
@@ -520,11 +654,12 @@ async def ws(sock: WebSocket):
     feed = q = None
     tasks = []
     try:
-        client = await connect()
+        client = await connect_broker(broker)
         if not client:
-            await send({"type": "error", "msg": S["error"] or "bridge not ready"})
+            err = PROVIDERS[broker].error if broker in PROVIDERS else S["error"]
+            await send({"type": "error", "msg": err or "bridge not ready"})
             return
-        feed, q = attach(asset)
+        feed, q = attach(asset, broker)
         rec = feed.rec
         if rec.last and now() - rec.last[0] < 5:
             first = rec.last   # the recorder is warm: no need to wait for a tick
@@ -538,7 +673,7 @@ async def ws(sock: WebSocket):
                 await send({"type": "error", "msg": "live feed ended"})
                 return
 
-        off, gap, candles, _ = await history_checked(client, asset, tf, first[1], rec)
+        off, gap, candles, _ = await history_checked_b(broker, client, asset, tf, first[1], rec)
         if candles and gap is not None and gap > MAX_GAP_PCT:
             await send({"type": "info", "msg": f"history differs from live price by {gap:.2f}% even after clock correction; broker history hidden"})
             candles = aggregate(rec.candles(), tf, 0)
@@ -554,7 +689,7 @@ async def ws(sock: WebSocket):
         if book.by:
             await send_history(False)
         miss = book.missing(forming)
-        await send({"type": "info", "msg": f"broker clock offset {off}s, {len(book.by)} candles" +
+        await send({"type": "info", "msg": f"{broker}: clock offset {off}s, {len(book.by)} candles" +
                     (f", {len(miss)} missing, retrying" if miss else "")})
 
         async def resync(delays):
@@ -565,7 +700,7 @@ async def ws(sock: WebSocket):
                 i += 1
                 await sleep(d)
                 try:
-                    cs, dbg = await build_history(client, asset, tf, st["off"], rec)
+                    cs, dbg = await build_history_b(broker, client, asset, tf, st["off"], rec)
                     g = disagreement(dbg, st["price"])
                     if cs and (g is None or g <= MAX_GAP_PCT):
                         if book.absorb(cs, st["top"]):

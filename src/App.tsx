@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ChartView from "./ChartView";
 import Sheet from "./Sheet";
+import BrokerMenu from "./BrokerMenu";
 import { Home, Signals, Api, Menu, StatusData } from "./Pages";
 import { grouped, prettyName, TIMEFRAMES, BROKERS, Asset } from "./assets";
 import "./styles.css";
@@ -43,7 +44,7 @@ export default function App() {
     let dead = false;
     const load = async () => {
       try {
-        const sRes = await fetch(`${http}/api/status`);
+        const sRes = await fetch(`${http}/api/status?broker=${broker}`);
         if (sRes.ok) {
           const s = await sRes.json();
           if (!dead) setStatus(s);
@@ -51,10 +52,15 @@ export default function App() {
           setStatus(null);
         }
 
-        const aRes = await fetch(`${http}/api/assets`);
+        const aRes = await fetch(`${http}/api/assets?broker=${broker}`);
         if (aRes.ok) {
           const a = await aRes.json();
-          if (!dead && Array.isArray(a)) setAssets(a);
+          if (!dead && Array.isArray(a)) {
+            setAssets(a);
+            if (a.length > 0 && !a.some((x) => x.symbol === asset)) {
+              setAsset(a[0].symbol);
+            }
+          }
         }
       } catch { 
         if (!dead) setStatus(null); 
@@ -63,7 +69,7 @@ export default function App() {
     load();
     const id = setInterval(load, status?.ready ? 60000 : 3000);
     return () => { dead = true; clearInterval(id); };
-  }, [http, status?.ready]);
+  }, [http, broker, status?.ready]);
 
   const current = assets.find((a) => a.symbol === asset);
   const label = current ? prettyName(current) : prettyName({ symbol: asset });
@@ -93,10 +99,10 @@ export default function App() {
       )}
 
       <main>
-        {tab === "home" && <Home status={status} onOpenChart={() => setTab("chart")} />}
+        {tab === "home" && <Home status={status} brokerName={brokerName} onOpenChart={() => setTab("chart")} />}
         {tab === "signals" && <Signals />}
-        {tab === "chart" && <ChartView wsBase={wsBase} asset={asset} tf={tf} reloadKey={reloadKey} />}
-        {tab === "api" && <Api bridge={bridge} setBridge={setBridge} />}
+        {tab === "chart" && <ChartView wsBase={wsBase} broker={broker} asset={asset} tf={tf} reloadKey={reloadKey} />}
+        {tab === "api" && <Api bridge={bridge} setBridge={setBridge} broker={broker} status={status} />}
         {tab === "menu" && <Menu />}
       </main>
 
@@ -116,14 +122,7 @@ export default function App() {
       </nav>
 
       {sheet === "broker" && (
-        <Sheet title="Broker" onClose={close}>
-          {BROKERS.map((b) => (
-            <button key={b.id} disabled={!b.ready} className={`item ${broker === b.id ? "sel" : ""}`}
-              onClick={() => { setBroker(b.id); close(); }}>
-              <span>{b.name}<small>{b.note}</small></span>
-            </button>
-          ))}
-        </Sheet>
+        <BrokerMenu current={broker} onPick={(id) => { setBroker(id); close(); }} onClose={close} />
       )}
 
       {sheet === "pair" && (

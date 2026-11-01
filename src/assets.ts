@@ -59,7 +59,20 @@ export const TIMEFRAMES = [
   { label: "1m", sec: 60 }, { label: "5m", sec: 300 }, { label: "15m", sec: 900 },
 ];
 
-export const BROKERS = [
-  { id: "pocket", name: "Pocket Option", note: "Connected through SSID", ready: true },
-  { id: "broker2", name: "Broker 2", note: "Third-party API, not connected yet", ready: false },
+export interface Broker {
+  id: string;
+  name: string;
+  note: string;
+  ready: boolean;
+  defaultAsset: string;
+  auth: "ssid" | "login" | "none";
+}
+
+// ready=false brokers are listed in the dropdown but greyed out until their provider exists on the bridge.
+export const BROKERS: Broker[] = [
+  { id: "quotex", name: "Quotex", note: "Email login through the bridge", ready: true, defaultAsset: "EURUSD_otc", auth: "login" },
+  { id: "iqoption", name: "IQ Option", note: "Email login through the bridge (read-only)", ready: true, defaultAsset: "EURUSD_otc", auth: "login" },
+  { id: "pocket", name: "Pocket Option", note: "Connected through SSID", ready: true, defaultAsset: "EURUSD_otc", auth: "ssid" },
+  { id: "tradowix", name: "Tradowix", note: "Not connected yet", ready: false, defaultAsset: "EURUSD_otc", auth: "none" },
+  { id: "binolla", name: "Binolla", note: "Not connected yet", ready: false, defaultAsset: "EURUSD_otc", auth: "none" },
 ];

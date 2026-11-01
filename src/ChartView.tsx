@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createChart, CrosshairMode, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
+import { BROKERS } from "./assets";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const clock = (s: number) => (s >= 3600 ? `${Math.floor(s / 3600)}:` : "") + `${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
@@ -15,12 +16,13 @@ interface Candle {
 
 interface ChartViewProps {
   wsBase: string;
+  broker: string;
   asset: string;
   tf: number;
   reloadKey: number;
 }
 
-export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewProps) {
+export default function ChartView({ wsBase, broker, asset, tf, reloadKey }: ChartViewProps) {
   const box = useRef<HTMLDivElement>(null);
   const pill = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<"connecting" | "live" | "error">("connecting");
@@ -91,8 +93,9 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
 
     const open = () => {
       try {
-        ws = new WebSocket(`${wsBase}/ws?asset=${encodeURIComponent(asset)}&tf=${tf}`);
+        ws = new WebSocket(`${wsBase}/ws?broker=${encodeURIComponent(broker)}&asset=${encodeURIComponent(asset)}&tf=${tf}`);
         ws.onmessage = (e) => {
+          if (closed) return; // a late message from the broker we just left must never paint on the new chart
           try {
             const m = JSON.parse(e.data);
             if (m.type === "history" && Array.isArray(m.candles) && m.candles.length) {
@@ -160,7 +163,7 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
       if (ws) ws.close(); 
       chart.remove();
     };
-  }, [wsBase, asset, tf, reloadKey]);
+  }, [wsBase, broker, asset, tf, reloadKey]);
 
   return (
     <div className="chart-wrap">
@@ -169,7 +172,7 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
       {state !== "live" && (
         <div className="overlay">
           <b>{state === "error" ? "Bridge error" : "Waiting for live data"}</b>
-          <span>{msg || `Connecting to ${wsBase}`}</span>
+          <span>{msg || `Connecting to ${BROKERS.find((b) => b.id === broker)?.name || broker}...`}</span>
         </div>
       )}
       {state === "live" && (
