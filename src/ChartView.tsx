@@ -96,6 +96,8 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
           try {
             const m = JSON.parse(e.data);
             if (m.type === "history" && Array.isArray(m.candles) && m.candles.length) {
+              // A refresh must never take away candles the chart already shows (that is how holes appeared).
+              if (m.resync && last && m.candles[m.candles.length - 1].time < last.time) return;
               setPrecision(m.candles[m.candles.length - 1].close);
               series.setData(m.candles.map(conv));
               last = m.candles[m.candles.length - 1];
@@ -107,6 +109,7 @@ export default function ChartView({ wsBase, asset, tf, reloadKey }: ChartViewPro
               place();
             } else if (m.type === "tick") {
               setPrecision(m.price);
+              if (last && m.candle.time < last.time) return; // stale tick for a candle that already closed
               if (!last) {
                 series.setData([conv(m.candle)]);
               } else {
