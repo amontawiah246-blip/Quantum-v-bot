@@ -2,6 +2,11 @@ import React from "react";
 import { BROKERS } from "./assets";
 
 const MARKS: Record<string, { bg: string; fg: string; glyph: React.ReactNode }> = {
+  deriv: {
+    bg: "#ff444f",
+    fg: "#ffffff",
+    glyph: <b style={{ fontSize: 17, fontWeight: 900, letterSpacing: -0.5 }}>D</b>,
+  },
   quotex: {
     bg: "#132145",
     fg: "#7ea5ff",
@@ -20,20 +25,6 @@ const MARKS: Record<string, { bg: string; fg: string; glyph: React.ReactNode }> 
     bg: "#063d27",
     fg: "#34d399",
     glyph: <b style={{ fontSize: 17, fontWeight: 900 }}>P</b>,
-  },
-  tradowix: {
-    bg: "#1e293b",
-    fg: "#e2e8f0",
-    glyph: (
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M5 9h12l-3-3M19 15H7l3 3" />
-      </svg>
-    ),
-  },
-  binolla: {
-    bg: "#1d3557",
-    fg: "#60a5fa",
-    glyph: <b style={{ fontSize: 18, fontWeight: 900 }}>B</b>,
   },
 };
 

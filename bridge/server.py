@@ -25,9 +25,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from BinaryOptionsToolsV2.pocketoption import PocketOptionAsync
 
 try:
-    from .iqoption_provider import IQProvider
-except ImportError:
-    from iqoption_provider import IQProvider
+    try:
+        from .iqoption_provider import IQProvider
+    except ImportError:
+        from iqoption_provider import IQProvider
+except Exception:
+    class IQProvider:
+        name = "iqoption"
+        configured = False
+        ready = False
+        error = "IQ Option not configured"
+        balance = None
+        assets = []
+        async def connect(self): return None
+        async def list_assets(self): return []
+        async def ticks(self, asset):
+            if False: yield (0, 0.0)
+        async def candles(self, asset, tf, window_s): return []
+        def set_credentials(self, email, password, ssid=""): pass
 
 try:
     try:
@@ -47,7 +62,27 @@ except Exception:
         async def ticks(self, asset):
             if False: yield (0, 0.0)
         async def candles(self, asset, tf, window_s): return []
-        def set_credentials(self, email, password): pass
+        def set_credentials(self, email, password, ssid=""): pass
+
+try:
+    try:
+        from .deriv_provider import DerivProvider
+    except ImportError:
+        from deriv_provider import DerivProvider
+except Exception:
+    class DerivProvider:
+        name = "deriv"
+        configured = False
+        ready = False
+        error = "Deriv not configured"
+        balance = None
+        assets = []
+        async def connect(self): return None
+        async def list_assets(self): return []
+        async def ticks(self, asset):
+            if False: yield (0, 0.0)
+        async def candles(self, asset, tf, window_s): return []
+        def set_credentials(self, email, password, ssid=""): pass
 
 now = time.time          # module-level so tests can run on a simulated clock
 sleep = asyncio.sleep
@@ -70,10 +105,12 @@ FINE_KEEP = 6 * 3600 // FINE
 CHAIN_MAX_GAP = 20         # seconds without ticks after which a new candle no longer chains to the old close
 IDLE_KEEP_S = 900          # keep recording an asset this long after the last chart closes
 DEFAULT_ASSET = "EURUSD_otc"
+
+DERIV = DerivProvider()    # Deriv (PAT token API)
 QX = QuotexProvider()      # Quotex (pyquotex); Pocket Option stays on the code path below
 IQ = IQProvider()          # IQ Option (read-only, same interface as the Quotex provider)
-PROVIDERS = {"quotex": QX, "iqoption": IQ}
-BROKERS = ("pocket", "quotex", "iqoption")
+PROVIDERS = {"deriv": DERIV, "quotex": QX, "iqoption": IQ}
+BROKERS = ("pocket", "deriv", "quotex", "iqoption")
 
 
 def bk(v):
@@ -574,14 +611,19 @@ async def set_credentials(data: dict):
         return {"status": "error", "msg": "This broker does not use email/password"}
     email, pw = str(data.get("email", "")).strip(), str(data.get("password", "")).strip()
     ssid = str(data.get("ssid", "")).strip()
-    if b == "iqoption":
+    if b == "deriv":
+        token = ssid or email
+        if not token:
+            return {"status": "error", "msg": "Enter Deriv API Token / PAT"}
+        DERIV.set_credentials(email, pw, ssid)
+    elif b == "iqoption":
         if not ssid and not (email and pw):
             return {"status": "error", "msg": "Enter email and password, or an IQ Option SSID"}
         IQ.set_credentials(email, pw, ssid)
     else:
-        if not email or not pw:
-            return {"status": "error", "msg": "Email and password are both needed"}
-        QX.set_credentials(email, pw)
+        if not ssid and (not email or not pw):
+            return {"status": "error", "msg": "Enter Quotex session token, or email and password"}
+        QX.set_credentials(email, pw, ssid)
     for k, f in list(feeds.items()):
         if f.broker == b and f.task:
             f.task.cancel()

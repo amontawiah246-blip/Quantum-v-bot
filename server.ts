@@ -21,6 +21,8 @@ function startBridge() {
     POCKET_SSID: process.env.POCKET_SSID || '',
     IQ_EMAIL: process.env.IQ_EMAIL || 'yawkwasi224@gmail.com',
     IQ_PASSWORD: process.env.IQ_PASSWORD || 'khemical2$',
+    QUOTEX_SSID: process.env.QUOTEX_SSID || 'QYezx7eGMKAnf3JSOzoPqU0YJER6vpsFHqNi0D4w',
+    DERIV_TOKEN: process.env.DERIV_TOKEN || 'pat_12430e9f3555e6dd3a2ad5bb86555b0a530667adbd0b8efd1f97b3abdcdaf106',
   };
 
   bridgeProc = spawn('python3', ['-m', 'uvicorn', 'bridge.server:app', '--host', '127.0.0.1', '--port', String(BRIDGE_PORT), '--log-level', 'warning'], {

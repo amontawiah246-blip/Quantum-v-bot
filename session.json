@@ -1,0 +1,12 @@
+{
+    "user@example.com": {
+        "cookies": null,
+        "token": "QYezx7eGMKAnf3JSOzoPqU0YJER6vpsFHqNi0D4w",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    },
+    "user@quotex.local": {
+        "cookies": null,
+        "token": "QYezx7eGMKAnf3JSOzoPqU0YJER6vpsFHqNi0D4w",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    }
+}

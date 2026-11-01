@@ -80,7 +80,12 @@ export function Api({ bridge, setBridge, broker, status }: ApiProps) {
   };
 
   const saveLogin = async () => {
-    const hasSsid = broker === 'iqoption' && !!ssidInput.trim();
+    let cleanSsid = ssidInput.trim();
+    if (cleanSsid.includes('"session"')) {
+      const match = cleanSsid.match(/"session"\s*:\s*"([^"]+)"/);
+      if (match) cleanSsid = match[1];
+    }
+    const hasSsid = !!cleanSsid;
     if (!hasSsid && (!email.trim() || !password)) return;
     setSaving(true);
     setMsg('');
@@ -88,7 +93,7 @@ export function Api({ bridge, setBridge, broker, status }: ApiProps) {
       const res = await fetch('/api/set-credentials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ broker, email: email.trim(), password, ssid: hasSsid ? ssidInput.trim() : '' }),
+        body: JSON.stringify({ broker, email: email.trim(), password, ssid: hasSsid ? cleanSsid : '' }),
       });
       const data = await res.json();
       setMsg(data.msg || 'Saved');
@@ -115,18 +120,29 @@ export function Api({ bridge, setBridge, broker, status }: ApiProps) {
         <input value={bridge} onChange={(e) => setBridge(e.target.value)} spellCheck={false} />
       </label>
 
-      {broker === 'quotex' || broker === 'iqoption' ? (
+      {broker === 'deriv' ? (
         <div className="field">
-          <span>{broker === 'iqoption' ? 'IQ Option login (read-only: prices only, no trading)' : 'Quotex login (practice account is used)'}</span>
-          <input type="email" autoComplete="username" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ marginTop: '6px' }} />
-          {broker === 'iqoption' && (
-            <textarea rows={2} className="search" placeholder="Or paste your IQ Option ssid cookie (use this if you have two-factor login)"
-              value={ssidInput} onChange={(e) => setSsidInput(e.target.value)}
-              style={{ fontFamily: 'monospace', fontSize: '11px', marginTop: '6px', resize: 'vertical' }} />
-          )}
+          <span>Deriv Personal Access Token (PAT)</span>
+          <textarea rows={2} className="search" placeholder="Paste your Deriv API Key (pat_...)"
+            value={ssidInput} onChange={(e) => setSsidInput(e.target.value)}
+            style={{ fontFamily: 'monospace', fontSize: '11px', marginBottom: '6px', resize: 'vertical' }} />
           <button className="primary" style={{ marginTop: '8px' }}
-            disabled={saving || !((email.trim() && password) || (broker === 'iqoption' && ssidInput.trim()))} onClick={saveLogin}>
+            disabled={saving || !ssidInput.trim()} onClick={saveLogin}>
+            {saving ? 'Connecting...' : 'Save & Connect Deriv'}
+          </button>
+          {status?.error && <p className="warn" style={{ marginTop: '6px' }}>{status.error}</p>}
+          {msg && <p className="muted" style={{ marginTop: '6px' }}>{msg}</p>}
+        </div>
+      ) : broker === 'quotex' || broker === 'iqoption' ? (
+        <div className="field">
+          <span>{broker === 'iqoption' ? 'IQ Option login' : 'Quotex token or login (practice account is used)'}</span>
+          <textarea rows={2} className="search" placeholder={broker === 'quotex' ? 'Paste Quotex session token or 42["authorization",{"session":"..."}]' : 'Paste IQ Option ssid cookie'}
+            value={ssidInput} onChange={(e) => setSsidInput(e.target.value)}
+            style={{ fontFamily: 'monospace', fontSize: '11px', marginBottom: '6px', resize: 'vertical' }} />
+          <input type="email" autoComplete="username" placeholder="Or Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="password" autoComplete="current-password" placeholder="Or Password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ marginTop: '6px' }} />
+          <button className="primary" style={{ marginTop: '8px' }}
+            disabled={saving || !(ssidInput.trim() || (email.trim() && password))} onClick={saveLogin}>
             {saving ? 'Connecting...' : `Save & Connect ${broker === 'iqoption' ? 'IQ Option' : 'Quotex'}`}
           </button>
           {status?.error && <p className="warn" style={{ marginTop: '6px' }}>{status.error}</p>}
