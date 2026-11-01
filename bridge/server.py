@@ -1,11 +1,10 @@
 """Pocket Option bridge: SSID -> BinaryOptionsToolsV2 -> HTTP/WebSocket for the dashboard. Real data only.
 
-Stability changes vs the previous version:
-- ONE Pocket Option subscription per asset, shared by every browser tab (fan-out), instead of one per socket.
-- A socket that disconnects is detected and its subscription released (before, orphaned streams piled up forever).
-- Closed candles are re-synced from Pocket Option's own history after each candle closes, so tick-built candles
-  can't drift from what the Pocket Option app shows.
-- No SSID is hardcoded in this file. Set POCKET_SSID (or paste it on the API screen).
+Why this does not use get_candles_live(): on the current Pocket Option servers the history endpoints use the
+BROKER's clock (UTC+2 at the time of testing) while live ticks are normalised to UTC by the library. Asking
+history for "now" in UTC therefore returns data from two hours ago. We measure the broker clock offset, ask for
+history in broker time, convert the labels back to UTC, fill the last minutes from 5-second candles, and verify
+the result against the live price before drawing anything.
 """
 import asyncio, json, os, time
 from contextlib import asynccontextmanager
@@ -20,14 +19,27 @@ SESSION_FILE = "/tmp/pocket_ssid.txt"
 SSID = os.environ.get("POCKET_SSID", "").strip()
 if not SSID and os.path.exists(SESSION_FILE):
     try:
-        with open(SESSION_FILE, "r") as f:
-            SSID = f.read().strip()
+        SSID = open(SESSION_FILE).read().strip()
     except Exception:
         pass
-
 S = {"client": None, "ready": False, "error": "", "balance": None, "assets": []}
 _lock = asyncio.Lock()
-feeds = {}  # asset -> Feed
+feeds = {}
+ROWS = 300
+MAX_GAP_PCT = 0.2  # history vs live price tolerance, percent
+
+
+def lib_version():
+    try:
+        from importlib.metadata import version
+        for n in ("BinaryOptionsToolsV2", "binaryoptionstoolsv2"):
+            try:
+                return version(n)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return "unknown"
 
 
 def to_epoch(v) -> float:
@@ -48,6 +60,11 @@ def field(d, *names):
         if v is not None:
             return v
     return None
+
+
+def norm(c):
+    return {"time": int(to_epoch(field(c, "timestamp", "time"))), "open": float(field(c, "open")),
+            "high": float(field(c, "high")), "low": float(field(c, "low")), "close": float(field(c, "close"))}
 
 
 async def connect() -> Optional[PocketOptionAsync]:
@@ -76,7 +93,7 @@ async def connect() -> Optional[PocketOptionAsync]:
             return None
 
 
-# ---------- shared live feed (one Pocket Option subscription per asset) ----------
+# ---------- shared live feed: one Pocket Option subscription per asset ----------
 class Feed:
     def __init__(self, asset):
         self.asset, self.queues, self.task = asset, set(), None
@@ -105,7 +122,7 @@ class Feed:
         except Exception as e:
             S["error"] = str(e)
         finally:
-            for q in list(self.queues):  # tell listeners the feed ended
+            for q in list(self.queues):
                 if q.full():
                     q.get_nowait()
                 q.put_nowait(None)
@@ -131,35 +148,96 @@ def detach(feed, q):
             feed.task.cancel()
 
 
-# ---------- history ----------
-def norm(c):
-    return {"time": int(to_epoch(field(c, "timestamp", "time"))), "open": float(field(c, "open")),
-            "high": float(field(c, "high")), "low": float(field(c, "low")), "close": float(field(c, "close"))}
-
-
-async def history(client, asset, tf):
+# ---------- history in broker time ----------
+async def measure_offset(client) -> int:
+    """Broker clock minus UTC, rounded to a quarter hour. Needs at least one live tick to have arrived."""
     try:
-        raw = await asyncio.wait_for(client.client.history(asset, tf), 8)
-        data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        st = float(await client.get_server_time())
+        off = int(round((st - time.time()) / 900.0)) * 900
+        return off if abs(off) <= 14 * 3600 else 0
     except Exception:
-        data = await asyncio.wait_for(client.get_candles(asset, tf, tf * 300), 12)
-    by = {}
+        return 0
+
+
+async def fetch(client, asset, period, window, off, end_utc=None):
+    """Candles for the window ending at end_utc, asked for in broker time, labels converted back to UTC."""
+    end = int(end_utc if end_utc is not None else time.time())
+    raw = await asyncio.wait_for(client.client.get_candles_advanced(asset, period, int(window), end + off), 25)
+    data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+    out = {}
     for x in data or []:
         try:
             c = norm(x)
-            by[c["time"]] = c
+            c["time"] -= off
+            out[c["time"]] = c
         except Exception:
             continue
-    return [by[t] for t in sorted(by)]
+    return [out[t] for t in sorted(out)]
+
+
+def aggregate(fine, tf, since):
+    by = {}
+    for c in fine:
+        b = c["time"] // tf * tf
+        if b < since:
+            continue
+        a = by.get(b)
+        if not a:
+            by[b] = {"time": b, "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]}
+        else:
+            a["high"], a["low"], a["close"] = max(a["high"], c["high"]), min(a["low"], c["low"]), c["close"]
+    return [by[b] for b in sorted(by)]
+
+
+async def build_history(client, asset, tf, off):
+    """Official candles at tf, plus the most recent minutes rebuilt from 5-second candles (history lags)."""
+    main = await fetch(client, asset, tf, tf * ROWS, off)
+    merged = {c["time"]: c for c in main}
+    S["dbg"] = {"official_count": len(main), "official_newest": main[-1]["time"] if main else None,
+                "fine5s_count": 0, "fine5s_newest": None}
+    if tf > 5:
+        since = (main[-1]["time"] if main else int(time.time()) - tf * 3)
+        window = int(time.time() - since) + 30
+        if window <= 4 * 3600:
+            try:
+                fine = await fetch(client, asset, 5, window, off)
+                S["dbg"].update(fine5s_count=len(fine), fine5s_newest=fine[-1]["time"] if fine else None, fine5s_window_s=window)
+                for c in aggregate(fine, tf, since):
+                    merged.setdefault(c["time"], c)  # official candle wins where both exist
+            except Exception:
+                pass
+    return [merged[t] for t in sorted(merged)]
+
+
+async def history_checked(client, asset, tf, live_price):
+    """Build history; if it disagrees with the live price, try other clock offsets and keep the best."""
+    off = await measure_offset(client)
+    tried = {}
+    for cand in [off] + [o for o in (7200, 0, 3600, -7200, 10800) if o != off]:
+        try:
+            cs = await build_history(client, asset, tf, cand)
+        except Exception:
+            continue
+        if not cs:
+            continue
+        gap = abs(cs[-1]["close"] - live_price) / live_price * 100
+        tried[cand] = (gap, cs)
+        if gap <= MAX_GAP_PCT:
+            return cand, gap, cs
+    if tried:
+        cand = min(tried, key=lambda k: tried[k][0])
+        return cand, tried[cand][0], tried[cand][1]
+    return off, None, []
 
 
 def merge_cur(candles, cur):
-    """Put the tick-built forming candle on top of Pocket Option's official history."""
     if not cur:
         return candles
     if not candles:
         return [dict(cur)]
     if candles[-1]["time"] == cur["time"]:
+        h = candles[-1]
+        cur["open"], cur["high"], cur["low"] = h["open"], max(h["high"], cur["high"]), min(h["low"], cur["low"])
         candles[-1] = dict(cur)
     elif cur["time"] > candles[-1]["time"]:
         candles.append(dict(cur))
@@ -178,8 +256,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/api/status")
 async def status():
-    return {"ready": S["ready"], "error": S["error"], "balance": S["balance"],
-            "demo": '"isDemo":1' in SSID.replace(" ", "") if SSID else True, "assets": len(S["assets"])}
+    return {"ready": S["ready"], "error": S["error"], "balance": S["balance"], "lib": lib_version(),
+            "demo": ('"isDemo":1' in SSID.replace(" ", "")) if SSID else True, "assets": len(S["assets"])}
 
 
 @app.get("/api/assets")
@@ -197,8 +275,7 @@ async def assets():
         if not sym:
             continue
         act = field(a, "is_active", "active", "is_open")
-        out.append({"symbol": sym, "name": field(a, "name"),
-                    "payout": field(a, "payout", "profit", "percent"),
+        out.append({"symbol": sym, "name": field(a, "name"), "payout": field(a, "payout", "profit", "percent"),
                     "active": True if act is None else bool(act)})
     return out
 
@@ -211,12 +288,11 @@ async def set_ssid(data: dict):
         return {"status": "error", "msg": "Empty SSID"}
     SSID = new
     try:
-        with open(SESSION_FILE, "w") as f:
-            f.write(new)
+        open(SESSION_FILE, "w").write(new)
     except Exception:
         pass
     S.update(ready=False, client=None, error="")
-    for f in list(feeds.values()):  # old streams belong to the old session
+    for f in list(feeds.values()):
         if f.task:
             f.task.cancel()
     asyncio.create_task(connect())
@@ -225,23 +301,32 @@ async def set_ssid(data: dict):
 
 @app.get("/api/diag")
 async def diag(asset: str = "EURUSD_otc", tf: int = 60):
-    """Last candles two ways, with UTC clock times, to compare against the Pocket Option app."""
+    """What the dashboard will draw: measured clock offset, verification against live price, newest candles."""
     client = await connect()
     if not client:
         return {"error": S["error"]}
-    fmt = lambda c: {**c, "utc": datetime.fromtimestamp(c["time"], timezone.utc).strftime("%H:%M")}
-    out = {"asset": asset, "tf": tf}
+    feed, q = attach(asset)
     try:
-        h = await history(client, asset, tf)
-        out["history_count"], out["history_last"] = len(h), [fmt(c) for c in h[-6:]]
+        first = await asyncio.wait_for(q.get(), 10)
+        if first is None:
+            return {"error": "live feed ended"}
+        live = first[1]
+        off, gap, cs = await history_checked(client, asset, tf, live)
+        fmt = lambda c: {**c, "utc": datetime.fromtimestamp(c["time"], timezone.utc).strftime("%H:%M:%S")}
+        return {"lib": lib_version(), "asset": asset, "tf": tf,
+                "now_utc": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                "measured_broker_offset_s": await measure_offset(client), "used_offset_s": off,
+                "live_price": live, "gap_to_live_pct": None if gap is None else round(gap, 4),
+                "count": len(cs), "newest": [fmt(c) for c in cs[-6:]],
+                "sources": {k: (datetime.fromtimestamp(v, timezone.utc).strftime("%H:%M:%S") if k.endswith("newest") and v else v)
+                            for k, v in (S.get("dbg") or {}).items()},
+                "missing_candles_before_now": [datetime.fromtimestamp(t, timezone.utc).strftime("%H:%M:%S")
+                                               for t in range(int(cs[-1]["time"]) + tf, int(time.time() // tf * tf) + tf, tf)]
+                                              if cs else None}
     except Exception as e:
-        out["history_error"] = str(e)
-    try:
-        g = await asyncio.wait_for(client.get_candles(asset, tf, tf * 10), 12)
-        out["get_candles_last"] = [fmt(norm(c)) for c in list(g)[-6:]]
-    except Exception as e:
-        out["get_candles_error"] = str(e)
-    return out
+        return {"error": str(e)}
+    finally:
+        detach(feed, q)
 
 
 @app.websocket("/ws")
@@ -262,22 +347,33 @@ async def ws(sock: WebSocket):
         if not client:
             await send({"type": "error", "msg": S["error"] or "bridge not ready"})
             return
-        feed, q = attach(asset)  # attach first so no tick is lost while history loads
-
-        st = {"cur": None, "synced": time.time()}
+        feed, q = attach(asset)
         try:
-            candles = await history(client, asset, tf)
-            if candles:
-                st["cur"] = dict(candles[-1])
-                await send({"type": "history", "candles": candles})
-        except Exception as e:
-            await send({"type": "info", "msg": f"history unavailable: {e}"})
+            first = await asyncio.wait_for(q.get(), 12)  # a tick must exist before the broker clock can be measured
+        except asyncio.TimeoutError:
+            await send({"type": "error", "msg": "no live ticks for this pair (market closed?)"})
+            return
+        if first is None:
+            await send({"type": "error", "msg": "live feed ended"})
+            return
+
+        off, gap, candles = await history_checked(client, asset, tf, first[1])
+        st = {"cur": None, "synced": time.time(), "off": off}
+        if candles and gap is not None and gap > MAX_GAP_PCT:
+            await send({"type": "info", "msg": f"history differs from live price by {gap:.2f}% even after clock correction; history hidden"})
+            candles = []
+        cur_bucket = int(time.time() // tf * tf)
+        if candles and candles[-1]["time"] == cur_bucket:
+            st["cur"] = dict(candles[-1])
+        if candles:
+            await send({"type": "history", "candles": candles})
+        await send({"type": "info", "msg": f"broker clock offset {off}s, {len(candles)} candles"})
 
         async def resync():
             try:
                 if tf >= 30:
-                    await asyncio.sleep(2)  # let Pocket Option finalise the closed candle
-                cs = await history(client, asset, tf)
+                    await asyncio.sleep(3)
+                cs = await build_history(client, asset, tf, st["off"])
                 if cs:
                     await send({"type": "history", "resync": True, "candles": merge_cur(cs, st["cur"])})
             except Exception:
@@ -287,12 +383,16 @@ async def ws(sock: WebSocket):
 
         async def pump():
             nonlocal resync_task
+            pending = [first]
             while True:
-                try:
-                    tick = await asyncio.wait_for(q.get(), 20)
-                except asyncio.TimeoutError:
-                    await send({"type": "info", "msg": "no ticks for 20s (market closed or feed paused)"})
-                    continue
+                if pending:
+                    tick = pending.pop(0)
+                else:
+                    try:
+                        tick = await asyncio.wait_for(q.get(), 20)
+                    except asyncio.TimeoutError:
+                        await send({"type": "info", "msg": "no ticks for 20s (market closed or feed paused)"})
+                        continue
                 if tick is None:
                     await send({"type": "error", "msg": "live feed ended, reconnecting"})
                     return
@@ -304,14 +404,14 @@ async def ws(sock: WebSocket):
                     rolled = cur is not None
                     cur = st["cur"] = {"time": b, "open": price, "high": price, "low": price, "close": price}
                 else:
-                    continue  # stale tick from an older candle
+                    continue
                 await send({"type": "tick", "price": price, "ts": ts, "candle": cur})
-                due = rolled if tf >= 30 else time.time() - st["synced"] > 30
+                due = rolled if tf >= 30 else time.time() - st["synced"] > 60
                 if due and not (resync_task and not resync_task.done()):
                     st["synced"] = time.time()
                     resync_task = asyncio.create_task(resync())
 
-        async def watch():  # notice when the browser goes away
+        async def watch():
             while True:
                 m = await sock.receive()
                 if m.get("type") == "websocket.disconnect":
