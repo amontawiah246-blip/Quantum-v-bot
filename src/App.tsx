@@ -90,7 +90,7 @@ export default function App() {
           <button className="chip" onClick={() => setSheet("broker")}>{brokerName} ▾</button>
           <button className="chip pair" onClick={() => setSheet("pair")}>
             <span>{label}</span>
-            {current?.payout != null && <em>{current.payout}%</em>}
+            {current?.payout != null && current.payout > 0 && <em>{current.payout}%</em>}
             <i>▾</i>
           </button>
           <button className="chip" onClick={() => setSheet("tf")}>{tfLabel} ▾</button>
@@ -136,7 +136,7 @@ export default function App() {
                 <button key={a.symbol} disabled={!a.active} className={`item ${a.symbol === asset ? "sel" : ""}`}
                   onClick={() => { setAsset(a.symbol); close(); }}>
                   <span>{a.label}</span>
-                  <b>{a.active ? (a.payout != null ? `${a.payout}%` : "") : "Closed"}</b>
+                  <b>{a.active ? (a.payout != null && a.payout > 0 ? `${a.payout}%` : "Live") : "Closed"}</b>
                 </button>
               ))}
             </section>

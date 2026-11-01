@@ -23,6 +23,7 @@ function startBridge() {
     IQ_PASSWORD: process.env.IQ_PASSWORD || 'khemical2$',
     QUOTEX_SSID: process.env.QUOTEX_SSID || 'QYezx7eGMKAnf3JSOzoPqU0YJER6vpsFHqNi0D4w',
     DERIV_TOKEN: process.env.DERIV_TOKEN || 'pat_12430e9f3555e6dd3a2ad5bb86555b0a530667adbd0b8efd1f97b3abdcdaf106',
+    DERIV_APP_ID: process.env.DERIV_APP_ID || '34QcI4Rf8S5tCkL6PMOcI',
   };
 
   bridgeProc = spawn('python3', ['-m', 'uvicorn', 'bridge.server:app', '--host', '127.0.0.1', '--port', String(BRIDGE_PORT), '--log-level', 'warning'], {
