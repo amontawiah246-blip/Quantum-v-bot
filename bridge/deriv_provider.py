@@ -28,6 +28,7 @@ import urllib.request
 from typing import Dict, List, Optional
 
 log = logging.getLogger("deriv")
+log.setLevel(logging.INFO)
 now = time.time
 
 PUBLIC_WS = os.environ.get(
@@ -84,6 +85,7 @@ class DerivProvider:
         self.account_id = os.environ.get("DERIV_ACCOUNT_ID", "").strip()
         if token:
             self._parse_credentials(token)
+        print("[Bridge] DerivProvider initialized")
 
         self.ready = False            # market-data socket is open
         self.error = ""               # market-data problem (shown by the server)
@@ -200,6 +202,7 @@ class DerivProvider:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                print(f"[Bridge] Deriv connection error: {e!r}")
                 self.error = f"Deriv market data connection failed: {e!r}"
                 log.warning(self.error)
             finally:

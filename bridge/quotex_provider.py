@@ -275,17 +275,35 @@ class QuotexProvider:
                 timeout=12
             )
             if not raw_candles:
+                try:
+                    if hasattr(self.client, "get_candle_v2"):
+                        raw_candles = await self.client.get_candle_v2(asset, int(tf), timeout=8)
+                except Exception:
+                    pass
+
+            if not raw_candles:
                 return []
 
             out = {}
             for c in raw_candles:
-                t_c = _num(c.get("time"))
-                o = _num(c.get("open"))
-                cl = _num(c.get("close"))
-                h = _num(c.get("high"))
-                l = _num(c.get("low"))
+                t_c, o, cl, h, l = None, None, None, None, None
+                if isinstance(c, dict):
+                    t_c = _num(c.get("time", c.get("t")))
+                    o = _num(c.get("open", c.get("o")))
+                    cl = _num(c.get("close", c.get("c")))
+                    h = _num(c.get("high", c.get("h")))
+                    l = _num(c.get("low", c.get("l")))
+                elif isinstance(c, (list, tuple)) and len(c) >= 5:
+                    t_c = _num(c[0])
+                    o = _num(c[1])
+                    cl = _num(c[2])
+                    h = _num(c[3])
+                    l = _num(c[4])
+
                 if t_c is None or o is None or cl is None:
                     continue
+                if t_c > 1e11:
+                    t_c = t_c / 1000.0
                 t_int = int(t_c // tf * tf)
                 out[t_int] = {
                     "time": t_int,

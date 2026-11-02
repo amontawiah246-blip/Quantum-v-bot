@@ -491,7 +491,7 @@ async def build_history_qx(asset, tf, rec=None, broker="quotex"):
             continue
     merged = {c["time"]: c for c in main}
     ticks = rec.candles() if rec else []
-    since = main[-1]["time"] if main else int(t // tf * tf) - tf * 3
+    since = main[-1]["time"] if main else int(t // tf * tf) - tf * ROWS
     for c in aggregate(ticks, tf, since, t):
         merged.setdefault(c["time"], c)
     dbg = {"official_count": len(main), "official_newest": main[-1]["time"] if main else None,

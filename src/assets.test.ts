@@ -43,12 +43,13 @@ test('timeframes contain 5s, 15s, 30s, 1m, 5m, 15m', () => {
   assert.deepEqual(labels, ['5s', '15s', '30s', '1m', '5m', '15m']);
 });
 
-test('brokers: Quotex, IQ Option and Pocket Option are ready, the rest are listed but waiting', () => {
+test('brokers: Deriv, Quotex, IQ Option and Pocket Option are ready, the rest are listed but waiting', () => {
   const by = (id: string) => BROKERS.find((b) => b.id === id);
+  assert.equal(by('deriv')?.ready, true);
   assert.equal(by('quotex')?.ready, true);
   assert.equal(by('pocket')?.ready, true);
   assert.equal(by('iqoption')?.ready, true);
   assert.equal(by('tradowix')?.ready, false);
   assert.equal(by('binolla')?.ready, false);
-  assert.deepEqual(BROKERS.map((b) => b.id), ['quotex', 'iqoption', 'pocket', 'tradowix', 'binolla']);
+  assert.deepEqual(BROKERS.map((b) => b.id), ['deriv', 'quotex', 'iqoption', 'pocket', 'tradowix', 'binolla']);
 });
